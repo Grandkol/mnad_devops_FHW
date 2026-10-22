@@ -1,0 +1,117 @@
+# pipelines/python_poetry_docker.yml не подключён: его Deploy Job коммитит в counter-deploy
+include:
+  - project: demo/templates
+    ref: main
+    file:
+      - variables/main.yml
+      - rules/main.yml
+      - jobs/poetry.yml
+      - jobs/kaniko.yml
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+Update Cache:
+  extends:
+    - .job__poetry
+    - .poetry_cache
+    - .rule__allow_failure
+  stage: .pre
+  needs: []
+  script:
+    - !reference [.script__poetry_install]
+  rules:
+    - !reference [.rule__on_merge_requests]
+    - !reference [.rule__on_default_branch]
+    - !reference [.rule__on_release_tag]
+
+Run Tests:
+  extends:
+    - .job__poetry
+  stage: test
+  needs:
+    - job: Update Cache
+      artifacts: false
+  script:
+    - !reference [.script__poetry_install]
+    - poetry run pytest --junitxml python.junit.xml
+  artifacts:
+    when: always
+    paths: [python.junit.xml]
+    reports:
+      junit: python.junit.xml
+  rules:
+    - !reference [.rule__enable_tests]
+    - !reference [.rule__on_merge_requests]
+    - !reference [.rule__on_default_branch]
+    - !reference [.rule__on_release_tag]
+
+# IMAGE_TAG (main_<sha> или vX.Y.Z) задают правила из rules/main.yml
+Publish Image:
+  extends:
+    - .job__kaniko_publish_image
+  stage: publish
+  needs:
+    - job: Run Tests
+      artifacts: false
+      optional: true
+  variables:
+    DOCKERFILE: Dockerfile
+  script:
+    - |
+      if [ -z "${IMAGE_TAG:-}" ]; then
+        echo "IMAGE_TAG is not set: set it in rules or variables" >&2
+        exit 1
+      fi
+    - b64_auth=$(printf '%s:%s' "$HARBOR_USER" "$HARBOR_PASSWORD" | base64 | tr -d '\n')
+    - >-
+      printf '{"auths": {"%s": {"auth": "%s"}}}' "$HARBOR_HOST" "$b64_auth"
+      >/kaniko/.docker/config.json
+    # --reproducible: у main_<sha> и vX.Y.Z из одного коммита один digest
+    - >-
+      /kaniko/executor
+      --cache
+      --reproducible
+      --skip-unused-stages
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/$DOCKERFILE"
+      --destination "$HARBOR_IMAGE:$IMAGE_TAG"
+      --cache-repo "$HARBOR_IMAGE/cache"
+      --digest-file "$CI_PROJECT_DIR/image.digest"
+    - echo "Published $HARBOR_IMAGE:$IMAGE_TAG@$(cat image.digest)"
+  # image.env из шаблона пишет только его скрипт
+  artifacts:
+    paths:
+      - image.digest
+  rules:
+    - !reference [.rule__on_default_branch]
+    - !reference [.rule__on_release_tag]
+
+Deploy:
+  stage: deploy
+  tags: [deploy, prom]
+  needs:
+    - job: Publish Image
+      artifacts: false
+  interruptible: false
+  resource_group: prom
+  environment:
+    name: prom
+    deployment_tier: production
+    url: http://localhost:8088
+  variables:
+    ANSIBLE_FORCE_COLOR: "1"
+  script:
+    - printf '%s' "$HARBOR_PASSWORD" | docker login --username "$HARBOR_USER" --password-stdin "$HARBOR_HOST"
+    - cd deploy
+    - >-
+      ansible-playbook audit-svc.play.yml
+      --vault-password-file ./vault-pass.sh
+      --extra-vars "audit_svc_image=$HARBOR_IMAGE:$CI_COMMIT_TAG"
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/

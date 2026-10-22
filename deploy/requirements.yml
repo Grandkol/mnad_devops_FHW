@@ -1,0 +1,7 @@
+---
+# пакет ansible в Ubuntu 24.04 уже содержит эти версии
+collections:
+  - name: community.docker
+    version: ">=3.7.0"
+  - name: community.postgresql
+    version: ">=3.3.0"

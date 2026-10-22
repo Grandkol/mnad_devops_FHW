@@ -1,0 +1,81 @@
+Running with gitlab-runner 19.4.1 (3c39fceb)
+  on deploy-vm maAdM9kTr, system ID: r_wdObkDEsuemf
+  UUID: 01a13569-5b2e-7e7f-9f0b-b12cff698247
+Preparing the "shell" executor
+00:00
+Using Shell (bash) executor...
+Preparing environment
+00:00
+Running on deploy-vm...
+Getting source from Git repository
+00:00
+Gitaly correlation ID: 01M4TSD0G5XAZNRYSGPCVMTCW8
+Fetching changes with git depth set to 20...
+Reinitialized existing Git repository in /data/gitlab-runner/builds/maAdM9kTr/0/demo/audit-svc/.git/
+Checking out c91e0106 as detached HEAD (ref is v0.5.0)...
+Skipping Git submodules setup
+Executing "step_script" stage of the job script
+00:07
+$ set -eu
+$ printf '%s' "$HARBOR_PASSWORD" | docker login --username "$HARBOR_USER" --password-stdin "$HARBOR_HOST"
+Login Succeeded
+$ cd deploy
+$ ansible-playbook audit-svc.play.yml --vault-password-file ./vault-pass.sh --extra-vars "audit_svc_image=$HARBOR_IMAGE:$CI_COMMIT_TAG"
+PLAY [Deploy audit-svc] ********************************************************
+TASK [Create docker network for audit-svc] *************************************
+ok: [deploy-vm]
+TASK [Create PostgreSQL data volume] *******************************************
+ok: [deploy-vm]
+TASK [Start PostgreSQL container] **********************************************
+ok: [deploy-vm]
+TASK [Remember PostgreSQL address] *********************************************
+ok: [deploy-vm]
+TASK [Wait for PostgreSQL] *****************************************************
+ok: [deploy-vm]
+TASK [Create database user audit_svc] ******************************************
+ok: [deploy-vm]
+TASK [Create database audit owned by audit_svc] ********************************
+ok: [deploy-vm]
+TASK [Get primary group of the deploy user] ************************************
+ok: [deploy-vm]
+TASK [Create config directory] *************************************************
+ok: [deploy-vm]
+TASK [Render audit-svc config] *************************************************
+ok: [deploy-vm]
+TASK [Apply database migrations] ***********************************************
+changed: [deploy-vm]
+TASK [Show migration log] ******************************************************
+ok: [deploy-vm] => {
+    "msg": [
+        "[INFO] applying 0003_events_actor_index",
+        "[INFO] done: 1 applied, 2 already in place"
+    ]
+}
+TASK [Start audit-svc container] ***********************************************
+[DEPRECATION WARNING]: The default value "ignore" for image_name_mismatch has
+been deprecated and will change to "recreate" in community.docker 4.0.0. In the
+ current situation, this would cause the container to be recreated since the
+current container's image name "harbor.localtest.me:8443/demo/audit-svc:v0.1.0"
+ does not match the desired image name "harbor.localtest.me:8443/demo/audit-
+svc:v0.5.0". This feature will be removed from community.docker in version
+4.0.0. Deprecation warnings can be disabled by setting
+deprecation_warnings=False in ansible.cfg.
+changed: [deploy-vm]
+TASK [Remember audit-svc address] **********************************************
+ok: [deploy-vm]
+TASK [Create Nginx config directory] *******************************************
+ok: [deploy-vm]
+TASK [Render Nginx config] *****************************************************
+ok: [deploy-vm]
+TASK [Start Nginx container] ***************************************************
+ok: [deploy-vm]
+TASK [Start nginx-prometheus-exporter container] *******************************
+ok: [deploy-vm]
+TASK [Flush handlers] **********************************************************
+TASK [Check audit-svc health] **************************************************
+ok: [deploy-vm]
+PLAY RECAP *********************************************************************
+deploy-vm                  : ok=19   changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+Cleaning up project directory and file based variables
+00:00
+Job succeeded

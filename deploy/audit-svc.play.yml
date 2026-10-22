@@ -1,0 +1,185 @@
+---
+- name: Deploy audit-svc
+  hosts: deploy
+  gather_facts: false
+
+  tasks:
+    - name: Create docker network for audit-svc
+      community.docker.docker_network:
+        name: "{{ audit_network }}"
+
+    - name: Create PostgreSQL data volume
+      community.docker.docker_volume:
+        name: "{{ postgres_volume }}"
+
+    # порт не публикуется, Ansible ходит в БД по IP контейнера
+    - name: Start PostgreSQL container
+      community.docker.docker_container:
+        name: "{{ postgres_container }}"
+        image: "{{ postgres_image }}"
+        restart_policy: unless-stopped
+        env:
+          POSTGRES_PASSWORD: "{{ postgres_superuser_password }}"
+        volumes:
+          - "{{ postgres_volume }}:/var/lib/postgresql/data"
+        networks:
+          - name: "{{ audit_network }}"
+      register: postgres_container_result
+      no_log: true
+
+    - name: Remember PostgreSQL address
+      ansible.builtin.set_fact:
+        postgres_host: "{{ postgres_container_result.container.NetworkSettings.Networks[audit_network].IPAddress }}"
+
+    - name: Wait for PostgreSQL
+      community.postgresql.postgresql_ping:
+        login_host: "{{ postgres_host }}"
+        login_user: postgres
+        login_password: "{{ postgres_superuser_password }}"
+      register: postgres_ping
+      until: postgres_ping.is_available
+      retries: 30
+      delay: 2
+      no_log: true
+
+    - name: Create database user audit_svc
+      community.postgresql.postgresql_user:
+        name: "{{ audit_db_user }}"
+        password: "{{ audit_db_password }}"
+        login_host: "{{ postgres_host }}"
+        login_user: postgres
+        login_password: "{{ postgres_superuser_password }}"
+      no_log: true
+
+    - name: Create database audit owned by audit_svc
+      community.postgresql.postgresql_db:
+        name: "{{ audit_db_name }}"
+        owner: "{{ audit_db_user }}"
+        login_host: "{{ postgres_host }}"
+        login_user: postgres
+        login_password: "{{ postgres_superuser_password }}"
+
+    # конфиг 0640 принадлежит раннеру, сервис читает его через доп. группу (groups)
+    - name: Get primary group of the deploy user
+      ansible.builtin.command: id -g
+      register: deploy_gid
+      changed_when: false
+
+    - name: Create config directory
+      ansible.builtin.file:
+        path: "{{ audit_svc_config_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Render audit-svc config
+      ansible.builtin.template:
+        src: config.yaml.j2
+        dest: "{{ audit_svc_config_dir }}/config.yaml"
+        mode: "0640"
+      no_log: true
+      notify: Reload audit-svc config
+
+    # при ненулевом коде выхода модуль падает, и новый образ не запускается
+    - name: Apply database migrations
+      community.docker.docker_container:
+        name: "{{ audit_svc_container }}-migrate"
+        image: "{{ audit_svc_image }}"
+        command: migrate
+        detach: false
+        cleanup: true
+        groups:
+          - "{{ deploy_gid.stdout }}"
+        volumes:
+          - "{{ audit_svc_config_dir }}:/etc/audit-svc:ro"
+        networks:
+          - name: "{{ audit_network }}"
+      register: migrate_result
+      changed_when: "'applying' in migrate_result.container.Output"
+
+    - name: Show migration log
+      ansible.builtin.debug:
+        msg: "{{ migrate_result.container.Output.splitlines() }}"
+
+    - name: Start audit-svc container
+      community.docker.docker_container:
+        name: "{{ audit_svc_container }}"
+        image: "{{ audit_svc_image }}"
+        # новый тег с тем же образом не пересоздаёт контейнер;
+        # в community.docker 4.0 значение по умолчанию станет recreate
+        image_name_mismatch: ignore
+        restart_policy: unless-stopped
+        groups:
+          - "{{ deploy_gid.stdout }}"
+        volumes:
+          - "{{ audit_svc_config_dir }}:/etc/audit-svc:ro"
+        networks:
+          - name: "{{ audit_network }}"
+      register: audit_svc_container_result
+
+    - name: Remember audit-svc address
+      ansible.builtin.set_fact:
+        audit_svc_host: "{{ audit_svc_container_result.container.NetworkSettings.Networks[audit_network].IPAddress }}"
+
+    - name: Create Nginx config directory
+      ansible.builtin.file:
+        path: "{{ nginx_config_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Render Nginx config
+      ansible.builtin.template:
+        src: nginx.conf.j2
+        dest: "{{ nginx_config_dir }}/default.conf"
+        mode: "0644"
+      notify: Reload Nginx config
+
+    - name: Start Nginx container
+      community.docker.docker_container:
+        name: "{{ nginx_container }}"
+        image: "{{ nginx_image }}"
+        restart_policy: unless-stopped
+        published_ports:
+          - "{{ nginx_port }}:{{ nginx_port }}"
+        volumes:
+          - "{{ nginx_config_dir }}:/etc/nginx/conf.d:ro"
+        networks:
+          - name: "{{ audit_network }}"
+
+    - name: Start nginx-prometheus-exporter container
+      community.docker.docker_container:
+        name: "{{ nginx_exporter_container }}"
+        image: "{{ nginx_exporter_image }}"
+        restart_policy: unless-stopped
+        command:
+          - "--nginx.scrape-uri=http://{{ nginx_container }}:{{ nginx_status_port }}/stub_status"
+        published_ports:
+          - "{{ nginx_exporter_port }}:9113"
+        networks:
+          - name: "{{ audit_network }}"
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check audit-svc health
+      ansible.builtin.uri:
+        url: "http://{{ audit_svc_host }}:{{ audit_svc_port }}/healthz"
+      register: healthz
+      until: healthz.status == 200
+      retries: 15
+      delay: 2
+
+  handlers:
+    # по IP контейнера, потому что через Nginx /reload закрыт
+    - name: Reload audit-svc config
+      ansible.builtin.uri:
+        url: "http://{{ audit_svc_host }}:{{ audit_svc_port }}/reload"
+        method: POST
+      register: reload_result
+      until: reload_result.status == 200
+      retries: 15
+      delay: 2
+
+    - name: Reload Nginx config
+      community.docker.docker_container_exec:
+        container: "{{ nginx_container }}"
+        command: sh -c 'nginx -t && nginx -s reload'

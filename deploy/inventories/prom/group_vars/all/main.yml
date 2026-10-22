@@ -1,0 +1,29 @@
+---
+audit_network: audit
+
+postgres_image: postgres:17
+postgres_container: postgres
+postgres_volume: audit-pg-data
+# применяется только при первой инициализации тома
+postgres_superuser_password: "{{ vault_postgres_superuser_password }}"
+
+audit_db_name: audit
+audit_db_user: audit_svc
+audit_db_password: "{{ vault_audit_db_password }}"
+
+# audit_svc_image передаёт CI через --extra-vars
+audit_svc_container: audit-svc
+audit_svc_port: 8080
+# монтируется каталог: template заменяет файл, и mount одного файла держал бы старый inode
+audit_svc_config_dir: /data/audit-svc/config
+
+nginx_image: nginx:1.28
+nginx_container: nginx
+# стенд пробрасывает deploy-vm:8080 на localhost:8088
+nginx_port: 8080
+nginx_status_port: 8081
+nginx_config_dir: /data/audit-svc/nginx
+
+nginx_exporter_image: nginx/nginx-prometheus-exporter:1.4
+nginx_exporter_container: nginx-exporter
+nginx_exporter_port: 9113

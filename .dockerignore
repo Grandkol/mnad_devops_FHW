@@ -1,0 +1,27 @@
+# В контекст сборки нужны только pyproject.toml, poetry.lock, README.md и src/
+.git
+.gitignore
+.gitlab-ci.yml
+.gitlab-ci-local*
+.idea
+.venv
+.cache
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+dist
+build
+*.egg-info
+*.tar.gz
+.env
+
+Dockerfile
+.dockerignore
+.editorconfig
+tests
+deploy
+monitoring
+screenshots
+stand
+REPORT.md
+Итоговое_задание_audit-svc.md

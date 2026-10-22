@@ -1,0 +1,38 @@
+# {{ ansible_managed }}
+
+# имя audit-svc резолвится на каждый запрос, иначе после пересоздания контейнера будет 502
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+server {
+    listen {{ nginx_port }};
+    server_name _;
+
+    set $audit_svc http://{{ audit_svc_container }}:{{ audit_svc_port }};
+
+    # URI здесь уже нормализован, так что //reload и /%72eload тоже попадают сюда
+    location ~* ^/reload {
+        return 404;
+    }
+
+    location / {
+        proxy_pass $audit_svc;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# для nginx-exporter, порт не публикуется
+server {
+    listen {{ nginx_status_port }};
+    server_name _;
+
+    location = /stub_status {
+        stub_status;
+    }
+
+    location / {
+        return 404;
+    }
+}
